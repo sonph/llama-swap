@@ -1408,9 +1408,9 @@ func TestMetricsMonitor_GetAggregatedMetrics(t *testing.T) {
 		assert.Equal(t, 1, len(agg.Models))
 		model := agg.Models["llama3-70b"]
 		assert.Equal(t, "ready", model.State)
-		assert.Equal(t, 5, model.Recent)
-		assert.Equal(t, 32.0, model.AvgTPS) // avg of 30,31,32,33,34
-		assert.Equal(t, 4000.0, model.AvgInputTokens)
+		assert.Equal(t, 5, model.NumRecentRequests)
+		assert.Equal(t, 32.0, model.AvgRecent10TPS) // avg of 30,31,32,33,34
+		assert.Equal(t, 4000.0, model.AvgRecent10PromptSize)
 		assert.Equal(t, 4, len(model.Buckets))
 		// All 5 requests are 4000 tokens → "1k-8k" bucket
 		assert.Equal(t, 0, model.Buckets[0].Count) // 0-1k
@@ -1442,10 +1442,10 @@ func TestMetricsMonitor_GetAggregatedMetrics(t *testing.T) {
 		})
 
 		assert.Equal(t, 2, len(agg.Models))
-		assert.Equal(t, 3, agg.Models["model-a"].Recent)
-		assert.Equal(t, 50.0, agg.Models["model-a"].AvgTPS)
-		assert.Equal(t, 3, agg.Models["model-b"].Recent)
-		assert.Equal(t, 15.0, agg.Models["model-b"].AvgTPS)
+		assert.Equal(t, 3, agg.Models["model-a"].NumRecentRequests)
+		assert.Equal(t, 50.0, agg.Models["model-a"].AvgRecent10TPS)
+		assert.Equal(t, 3, agg.Models["model-b"].NumRecentRequests)
+		assert.Equal(t, 15.0, agg.Models["model-b"].AvgRecent10TPS)
 		// model-b at 50000 tokens → "32k+" bucket
 		assert.Equal(t, 3, agg.Models["model-b"].Buckets[3].Count)
 	})
@@ -1494,7 +1494,7 @@ func TestMetricsMonitor_GetAggregatedMetrics(t *testing.T) {
 
 		assert.Equal(t, 1, len(agg.Models))
 		assert.Equal(t, "unloaded", agg.Models["mistral-7b"].State)
-		assert.Equal(t, 1, agg.Models["mistral-7b"].Recent)
+		assert.Equal(t, 1, agg.Models["mistral-7b"].NumRecentRequests)
 	})
 
 	t.Run("never-used model excluded", func(t *testing.T) {
@@ -1531,9 +1531,9 @@ func TestMetricsMonitor_GetAggregatedMetrics(t *testing.T) {
 			"big-model": "ready",
 		})
 
-		assert.Equal(t, 10, agg.Models["big-model"].Recent)
+		assert.Equal(t, 10, agg.Models["big-model"].NumRecentRequests)
 		// Last 10 are: 6,7,8,9,10,11,12,13,14,15 → avg = 10.5
-		assert.Equal(t, 10.5, agg.Models["big-model"].AvgTPS)
+		assert.Equal(t, 10.5, agg.Models["big-model"].AvgRecent10TPS)
 	})
 
 	t.Run("empty metrics", func(t *testing.T) {
@@ -1561,7 +1561,7 @@ func TestMetricsMonitor_GetAggregatedMetrics(t *testing.T) {
 		agg := mon.getAggregatedMetrics(map[string]string{})
 
 		// Avg is over all requests, but TPS=0 counts as 0 in average
-		assert.Equal(t, 2, agg.Models["test"].Recent)
-		assert.Equal(t, 20.0, agg.Models["test"].AvgTPS) // (0+40)/2
+		assert.Equal(t, 2, agg.Models["test"].NumRecentRequests)
+		assert.Equal(t, 20.0, agg.Models["test"].AvgRecent10TPS) // (0+40)/2
 	})
 }

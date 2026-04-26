@@ -120,12 +120,12 @@ type PromptBucket struct {
 
 // ModelMetrics represents aggregated metrics for a single model
 type ModelMetrics struct {
-	State          string         `json:"state"`
-	Aliases        []string       `json:"aliases,omitempty"`
-	Recent         int            `json:"recent"`
-	AvgTPS         float64        `json:"avg_tps"`
-	AvgInputTokens float64        `json:"avg_input_tokens"`
-	Buckets        []PromptBucket `json:"buckets"`
+	State                 string         `json:"state"`
+	Aliases               []string       `json:"aliases,omitempty"`
+	NumRecentRequests     int            `json:"num_recent_requests"`
+	AvgRecent10TPS        float64        `json:"avg_recent_10_tps"`
+	AvgRecent10PromptSize float64        `json:"avg_recent_10_prompt_size"`
+	Buckets               []PromptBucket `json:"buckets"`
 }
 
 // AggregatedMetricsResponse is the response for /api/metrics?aggregate=true
@@ -323,8 +323,8 @@ func (mp *metricsMonitor) getAggregatedMetrics(modelStates map[string]string) Ag
 	// Process models with recent metrics
 	for modelID, metrics := range modelMetrics {
 		mm := ModelMetrics{
-			Recent:  len(metrics),
-			Buckets: make([]PromptBucket, len(promptBucketRanges)),
+			NumRecentRequests: len(metrics),
+			Buckets:           make([]PromptBucket, len(promptBucketRanges)),
 		}
 		for i := range promptBucketRanges {
 			mm.Buckets[i] = PromptBucket{
@@ -353,8 +353,8 @@ func (mp *metricsMonitor) getAggregatedMetrics(modelStates map[string]string) Ag
 		}
 
 		if len(metrics) > 0 {
-			mm.AvgTPS = roundTo2(totalTPS / float64(len(metrics)))
-			mm.AvgInputTokens = roundTo2(totalInput / float64(len(metrics)))
+			mm.AvgRecent10TPS = roundTo2(totalTPS / float64(len(metrics)))
+			mm.AvgRecent10PromptSize = roundTo2(totalInput / float64(len(metrics)))
 		}
 		for j := range mm.Buckets {
 			if mm.Buckets[j].Count > 0 {
@@ -382,9 +382,9 @@ func (mp *metricsMonitor) getAggregatedMetrics(modelStates map[string]string) Ag
 			state = "unloaded"
 		}
 		result.Models[modelID] = ModelMetrics{
-			State:   state,
-			Recent:  0,
-			Buckets: makeBuckets(),
+			State:             state,
+			NumRecentRequests: 0,
+			Buckets:           makeBuckets(),
 		}
 	}
 
@@ -660,17 +660,19 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 
 	// use llama-server's timing data for tok/sec and duration as it is more accurate
 	if timings.Exists() {
-		inputTokens = int(timings.Get("prompt_n").Int())
+		promptN := int(timings.Get("prompt_n").Int())
+		var cacheN int
+		if cachedValue := timings.Get("cache_n"); cachedValue.Exists() {
+			cacheN = int(cachedValue.Int())
+			cachedTokens = cacheN
+		}
+		inputTokens = promptN + cacheN // total prompt size = new + cached
 		outputTokens = int(timings.Get("predicted_n").Int())
 		promptPerSecond = timings.Get("prompt_per_second").Float()
 		tokensPerSecond = timings.Get("predicted_per_second").Float()
 		timingsDurationMs := int(timings.Get("prompt_ms").Float() + timings.Get("predicted_ms").Float())
 		if timingsDurationMs > durationMs {
 			durationMs = timingsDurationMs
-		}
-
-		if cachedValue := timings.Get("cache_n"); cachedValue.Exists() {
-			cachedTokens = int(cachedValue.Int())
 		}
 	}
 
