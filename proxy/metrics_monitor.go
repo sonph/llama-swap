@@ -337,12 +337,14 @@ func (mp *metricsMonitor) getAggregatedMetrics(modelStates map[string]string) Ag
 			if m.TokensPerSecond > 0 {
 				totalTPS += m.TokensPerSecond
 			}
-			totalInput += float64(m.InputTokens)
+			// Total context size = new tokens + cached tokens
+			totalContext := m.InputTokens + m.CachedTokens
+			totalInput += float64(totalContext)
 
-			// Bucket by input_tokens
+			// Bucket by total prompt size
 			for j, rng := range promptBucketRanges {
-				if (rng.max == -1 && m.InputTokens >= rng.min) ||
-					(m.InputTokens >= rng.min && m.InputTokens <= rng.max) {
+				if (rng.max == -1 && totalContext >= rng.min) ||
+					(totalContext >= rng.min && totalContext <= rng.max) {
 					mm.Buckets[j].Count++
 					if m.TokensPerSecond > 0 {
 						mm.Buckets[j].AvgTPS += m.TokensPerSecond
@@ -666,7 +668,7 @@ func parseMetrics(modelID string, start time.Time, usage, timings gjson.Result) 
 			cacheN = int(cachedValue.Int())
 			cachedTokens = cacheN
 		}
-		inputTokens = promptN + cacheN // total prompt size = new + cached
+		inputTokens = promptN
 		outputTokens = int(timings.Get("predicted_n").Int())
 		promptPerSecond = timings.Get("prompt_per_second").Float()
 		tokensPerSecond = timings.Get("predicted_per_second").Float()
