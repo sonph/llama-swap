@@ -111,6 +111,40 @@ func (e ActivityLogEvent) Type() uint32 {
 	return ActivityLogEventID // defined in events.go
 }
 
+// PromptBucket represents a prompt-size range with aggregated TPS data
+type PromptBucket struct {
+	Range  string  `json:"range"`
+	Count  int     `json:"count"`
+	AvgTPS float64 `json:"avg_tps"`
+}
+
+// ModelMetrics represents aggregated metrics for a single model
+type ModelMetrics struct {
+	State          string         `json:"state"`
+	Aliases        []string       `json:"aliases,omitempty"`
+	Recent         int            `json:"recent"`
+	AvgTPS         float64        `json:"avg_tps"`
+	AvgInputTokens float64        `json:"avg_input_tokens"`
+	Buckets        []PromptBucket `json:"buckets"`
+}
+
+// AggregatedMetricsResponse is the response for /api/metrics?aggregate=true
+type AggregatedMetricsResponse struct {
+	Models map[string]ModelMetrics `json:"models"`
+}
+
+// promptBucketRanges defines the input token ranges for bucketing
+var promptBucketRanges = []struct {
+	label string
+	min   int
+	max   int // -1 means unlimited
+}{
+	{"0-1k", 0, 1024},
+	{"1k-8k", 1025, 8192},
+	{"8k-32k", 8193, 32768},
+	{"32k+", 32769, -1},
+}
+
 // metricsMonitor parses llama-server output for token statistics
 type metricsMonitor struct {
 	mu         sync.RWMutex
@@ -121,7 +155,10 @@ type metricsMonitor struct {
 
 	// capture fields
 	enableCaptures bool
-	captureCache   *cache.Cache // zstd-compressed CBOR of ReqRespCapture
+	captureCache *cache.Cache     // zstd-compressed CBOR of ReqRespCapture
+
+	// seenModels tracks the last time each model appeared in metrics
+	seenModels map[string]time.Time
 }
 
 // newMetricsMonitor creates a new metricsMonitor. captureBufferMB is the
@@ -131,6 +168,7 @@ func newMetricsMonitor(logger *LogMonitor, maxMetrics int, captureBufferMB int) 
 		logger:         logger,
 		maxMetrics:     maxMetrics,
 		enableCaptures: captureBufferMB > 0,
+		seenModels:     make(map[string]time.Time),
 	}
 	if captureBufferMB > 0 {
 		mm.captureCache = cache.New(captureBufferMB * 1024 * 1024)
@@ -150,6 +188,7 @@ func (mp *metricsMonitor) queueMetrics(metric ActivityLogEntry) int {
 	if len(mp.metrics) > mp.maxMetrics {
 		mp.metrics = mp.metrics[len(mp.metrics)-mp.maxMetrics:]
 	}
+	mp.seenModels[metric.Model] = time.Now()
 	return metric.ID
 }
 
@@ -258,8 +297,113 @@ const (
 	captureAll     = captureReqAll | captureRespAll
 )
 
-// wrapHandler wraps the proxy handler to extract token metrics.
-// captureFields controls what is saved in the ReqRespCapture using bitwise flags.
+const aggregateWindow = 10
+
+// getAggregatedMetrics returns aggregated metrics grouped by model.
+// modelStates maps model ID → state string ("ready", "starting", etc.).
+func (mp *metricsMonitor) getAggregatedMetrics(modelStates map[string]string) AggregatedMetricsResponse {
+	mp.mu.RLock()
+	defer mp.mu.RUnlock()
+
+	// Collect last N metrics per model
+	modelMetrics := make(map[string][]TokenMetrics)
+	for i := len(mp.metrics) - 1; i >= 0; i-- {
+		m := mp.metrics[i]
+		if len(modelMetrics[m.Model]) >= aggregateWindow {
+			continue
+		}
+		modelMetrics[m.Model] = append(modelMetrics[m.Model], m.Tokens)
+	}
+
+	// Build response
+	result := AggregatedMetricsResponse{
+		Models: make(map[string]ModelMetrics),
+	}
+
+	// Process models with recent metrics
+	for modelID, metrics := range modelMetrics {
+		mm := ModelMetrics{
+			Recent:  len(metrics),
+			Buckets: make([]PromptBucket, len(promptBucketRanges)),
+		}
+		for i := range promptBucketRanges {
+			mm.Buckets[i] = PromptBucket{
+				Range: promptBucketRanges[i].label,
+			}
+		}
+
+		var totalTPS, totalInput float64
+		for _, m := range metrics {
+			if m.TokensPerSecond > 0 {
+				totalTPS += m.TokensPerSecond
+			}
+			totalInput += float64(m.InputTokens)
+
+			// Bucket by input_tokens
+			for j, rng := range promptBucketRanges {
+				if (rng.max == -1 && m.InputTokens >= rng.min) ||
+					(m.InputTokens >= rng.min && m.InputTokens <= rng.max) {
+					mm.Buckets[j].Count++
+					if m.TokensPerSecond > 0 {
+						mm.Buckets[j].AvgTPS += m.TokensPerSecond
+					}
+					break
+				}
+			}
+		}
+
+		if len(metrics) > 0 {
+			mm.AvgTPS = roundTo2(totalTPS / float64(len(metrics)))
+			mm.AvgInputTokens = roundTo2(totalInput / float64(len(metrics)))
+		}
+		for j := range mm.Buckets {
+			if mm.Buckets[j].Count > 0 {
+				mm.Buckets[j].AvgTPS = roundTo2(mm.Buckets[j].AvgTPS / float64(mm.Buckets[j].Count))
+			}
+		}
+
+		// Resolve state
+		if state, ok := modelStates[modelID]; ok {
+			mm.State = state
+		} else {
+			mm.State = "unloaded"
+		}
+
+		result.Models[modelID] = mm
+	}
+
+	// Include seen-but-unloaded models (no recent metrics but in seenModels)
+	for modelID, _ := range mp.seenModels {
+		if _, exists := result.Models[modelID]; exists {
+			continue
+		}
+		state, ok := modelStates[modelID]
+		if !ok {
+			state = "unloaded"
+		}
+		result.Models[modelID] = ModelMetrics{
+			State:   state,
+			Recent:  0,
+			Buckets: makeBuckets(),
+		}
+	}
+
+	return result
+}
+
+func makeBuckets() []PromptBucket {
+	buckets := make([]PromptBucket, len(promptBucketRanges))
+	for i := range promptBucketRanges {
+		buckets[i] = PromptBucket{Range: promptBucketRanges[i].label}
+	}
+	return buckets
+}
+
+func roundTo2(v float64) float64 {
+	return float64(int(v*100+0.5)) / 100
+}
+
+// wrapHandler wraps the proxy handler to extract token metrics
 // if wrapHandler returns an error it is safe to assume that no
 // data was sent to the client
 func (mp *metricsMonitor) wrapHandler(

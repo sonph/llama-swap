@@ -239,9 +239,39 @@ func (pm *ProxyManager) apiSendEvents(c *gin.Context) {
 }
 
 func (pm *ProxyManager) apiGetMetrics(c *gin.Context) {
+	if c.Query("aggregate") == "true" {
+		pm.apiGetAggregatedMetrics(c)
+		return
+	}
+
 	jsonData, err := pm.metricsMonitor.getMetricsJSON()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get metrics"})
+		return
+	}
+	c.Data(http.StatusOK, "application/json", jsonData)
+}
+
+func (pm *ProxyManager) apiGetAggregatedMetrics(c *gin.Context) {
+	// Build model states map
+	modelStates := make(map[string]string)
+	for _, model := range pm.getModelStatus() {
+		modelStates[model.Id] = model.State
+	}
+
+	agg := pm.metricsMonitor.getAggregatedMetrics(modelStates)
+
+	// Attach aliases from config
+	for modelID, mm := range agg.Models {
+		if cfg, ok := pm.config.Models[modelID]; ok {
+			mm.Aliases = cfg.Aliases
+			agg.Models[modelID] = mm
+		}
+	}
+
+	jsonData, err := json.Marshal(agg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to aggregate metrics"})
 		return
 	}
 	c.Data(http.StatusOK, "application/json", jsonData)

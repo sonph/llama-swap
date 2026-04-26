@@ -1387,3 +1387,181 @@ func TestMetricsMonitor_WrapHandler_PartialCaptures(t *testing.T) {
 		assert.Equal(t, []byte(responseBody), capture.RespBody)
 	})
 }
+
+func TestMetricsMonitor_GetAggregatedMetrics(t *testing.T) {
+	t.Run("single model with multiple requests", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		for i := 0; i < 5; i++ {
+			mon.addMetrics(TokenMetrics{
+				Model:           "llama3-70b",
+				InputTokens:     4000,
+				OutputTokens:    200,
+				TokensPerSecond: 30 + float64(i),
+			})
+		}
+
+		agg := mon.getAggregatedMetrics(map[string]string{
+			"llama3-70b": "ready",
+		})
+
+		assert.Equal(t, 1, len(agg.Models))
+		model := agg.Models["llama3-70b"]
+		assert.Equal(t, "ready", model.State)
+		assert.Equal(t, 5, model.Recent)
+		assert.Equal(t, 32.0, model.AvgTPS) // avg of 30,31,32,33,34
+		assert.Equal(t, 4000.0, model.AvgInputTokens)
+		assert.Equal(t, 4, len(model.Buckets))
+		// All 5 requests are 4000 tokens → "1k-8k" bucket
+		assert.Equal(t, 0, model.Buckets[0].Count) // 0-1k
+		assert.Equal(t, 5, model.Buckets[1].Count) // 1k-8k
+		assert.Equal(t, 0, model.Buckets[2].Count) // 8k-32k
+		assert.Equal(t, 0, model.Buckets[3].Count) // 32k+
+		assert.Equal(t, 32.0, model.Buckets[1].AvgTPS)
+	})
+
+	t.Run("multiple models grouped separately", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		for i := 0; i < 3; i++ {
+			mon.addMetrics(TokenMetrics{
+				Model:           "model-a",
+				InputTokens:     500,
+				TokensPerSecond: 50,
+			})
+			mon.addMetrics(TokenMetrics{
+				Model:           "model-b",
+				InputTokens:     50000,
+				TokensPerSecond: 15,
+			})
+		}
+
+		agg := mon.getAggregatedMetrics(map[string]string{
+			"model-a": "ready",
+			"model-b": "ready",
+		})
+
+		assert.Equal(t, 2, len(agg.Models))
+		assert.Equal(t, 3, agg.Models["model-a"].Recent)
+		assert.Equal(t, 50.0, agg.Models["model-a"].AvgTPS)
+		assert.Equal(t, 3, agg.Models["model-b"].Recent)
+		assert.Equal(t, 15.0, agg.Models["model-b"].AvgTPS)
+		// model-b at 50000 tokens → "32k+" bucket
+		assert.Equal(t, 3, agg.Models["model-b"].Buckets[3].Count)
+	})
+
+	t.Run("prompt size bucket boundaries", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		testCases := []struct {
+			inputTokens int
+			expectedIdx int
+		}{
+			{500, 0},   // 0-1k
+			{5000, 1},  // 1k-8k
+			{20000, 2}, // 8k-32k
+			{64000, 3}, // 32k+
+		}
+
+		for _, tc := range testCases {
+			mon.addMetrics(TokenMetrics{
+				Model:           "test",
+				InputTokens:     tc.inputTokens,
+				TokensPerSecond: 25,
+			})
+		}
+
+		agg := mon.getAggregatedMetrics(map[string]string{})
+		model := agg.Models["test"]
+
+		for _, tc := range testCases {
+			assert.Equal(t, 1, model.Buckets[tc.expectedIdx].Count,
+				"input %d should be in bucket %d (%s)",
+				tc.inputTokens, tc.expectedIdx, promptBucketRanges[tc.expectedIdx].label)
+		}
+	})
+
+	t.Run("unloaded model with recent metrics", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		mon.addMetrics(TokenMetrics{
+			Model:           "mistral-7b",
+			InputTokens:     1000,
+			TokensPerSecond: 40,
+		})
+
+		agg := mon.getAggregatedMetrics(map[string]string{})
+
+		assert.Equal(t, 1, len(agg.Models))
+		assert.Equal(t, "unloaded", agg.Models["mistral-7b"].State)
+		assert.Equal(t, 1, agg.Models["mistral-7b"].Recent)
+	})
+
+	t.Run("never-used model excluded", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		mon.addMetrics(TokenMetrics{
+			Model:           "used-model",
+			InputTokens:     500,
+			TokensPerSecond: 30,
+		})
+
+		agg := mon.getAggregatedMetrics(map[string]string{
+			"used-model":   "ready",
+			"unused-model": "stopped",
+		})
+
+		assert.Equal(t, 1, len(agg.Models))
+		_, exists := agg.Models["unused-model"]
+		assert.False(t, exists)
+	})
+
+	t.Run("limit to last 10 per model", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		for i := 0; i < 15; i++ {
+			mon.addMetrics(TokenMetrics{
+				Model:           "big-model",
+				InputTokens:     1000,
+				TokensPerSecond: float64(i + 1),
+			})
+		}
+
+		agg := mon.getAggregatedMetrics(map[string]string{
+			"big-model": "ready",
+		})
+
+		assert.Equal(t, 10, agg.Models["big-model"].Recent)
+		// Last 10 are: 6,7,8,9,10,11,12,13,14,15 → avg = 10.5
+		assert.Equal(t, 10.5, agg.Models["big-model"].AvgTPS)
+	})
+
+	t.Run("empty metrics", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		agg := mon.getAggregatedMetrics(map[string]string{})
+
+		assert.Equal(t, 0, len(agg.Models))
+	})
+
+	t.Run("zero TPS not counted in average", func(t *testing.T) {
+		mon := newMetricsMonitor(testLogger, 100, 0)
+
+		mon.addMetrics(TokenMetrics{
+			Model:           "test",
+			InputTokens:     500,
+			TokensPerSecond: 0, // no timing data
+		})
+		mon.addMetrics(TokenMetrics{
+			Model:           "test",
+			InputTokens:     500,
+			TokensPerSecond: 40,
+		})
+
+		agg := mon.getAggregatedMetrics(map[string]string{})
+
+		// Avg is over all requests, but TPS=0 counts as 0 in average
+		assert.Equal(t, 2, agg.Models["test"].Recent)
+		assert.Equal(t, 20.0, agg.Models["test"].AvgTPS) // (0+40)/2
+	})
+}
