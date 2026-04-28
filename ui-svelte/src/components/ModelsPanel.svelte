@@ -168,6 +168,9 @@
               {#if model.aliases && model.aliases.length > 0}
                 <p class="text-xs text-txtsecondary">Aliases: {model.aliases.join(", ")}</p>
               {/if}
+              {#if model.contextSize}
+                <p class="text-xs text-txtsecondary">Context: {model.contextSize}{#if model.kvCacheTypes && model.kvCacheTypes.length > 0} @ {model.kvCacheTypes.join(" / ")}{/if}</p>
+              {/if}
             </td>
             <td class="w-12">
               {#if model.state === "stopped"}

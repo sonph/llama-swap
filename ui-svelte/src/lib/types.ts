@@ -10,6 +10,8 @@ export interface Model {
   unlisted: boolean;
   peerID: string;
   aliases?: string[];
+  contextSize?: string;
+  kvCacheTypes?: string[];
 }
 
 export interface TokenMetrics {

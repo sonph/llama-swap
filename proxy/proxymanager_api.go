@@ -14,13 +14,77 @@ import (
 )
 
 type Model struct {
-	Id          string   `json:"id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	State       string   `json:"state"`
-	Unlisted    bool     `json:"unlisted"`
-	PeerID      string   `json:"peerID"`
-	Aliases     []string `json:"aliases,omitempty"`
+	Id           string   `json:"id"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	State        string   `json:"state"`
+	Unlisted     bool     `json:"unlisted"`
+	PeerID       string   `json:"peerID"`
+	Aliases      []string `json:"aliases,omitempty"`
+	ContextSize  string   `json:"contextSize,omitempty"`
+	KvCacheTypes []string `json:"kvCacheTypes,omitempty"`
+}
+
+// parseCtxSize extracts the context size from a command string like "--ctx-size 100000"
+// Returns a human-readable string like "100k" or empty string if not found.
+func parseCtxSize(cmd string) string {
+	args := strings.Fields(cmd)
+	for i, arg := range args {
+		if arg == "--ctx-size" && i+1 < len(args) {
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				return args[i+1]
+			}
+			if n >= 1000 {
+				return fmt.Sprintf("%dk", n/1000)
+			}
+			return strconv.Itoa(n)
+		}
+	}
+	return ""
+}
+
+// parseKvCacheTypes extracts KV cache types from command flags.
+// Supports: --kv-cache-type k:q8_0,v:f16 and --kv-cache-type-k / --kv-cache-type-v
+// Returns types like ["q8_0", "f16"] or empty slice.
+func parseKvCacheTypes(cmd string) []string {
+	args := strings.Fields(cmd)
+	var kType, vType string
+	for i, arg := range args {
+		if arg == "--kv-cache-type" && i+1 < len(args) {
+			val := args[i+1]
+			parts := strings.Split(val, ",")
+			for _, part := range parts {
+				kv := strings.SplitN(part, ":", 2)
+				if len(kv) == 2 {
+					if kv[0] == "k" {
+						kType = kv[1]
+					} else if kv[0] == "v" {
+						vType = kv[1]
+					}
+				} else if len(kv) == 1 {
+					if kType == "" {
+						kType = kv[0]
+					}
+					if vType == "" {
+						vType = kv[0]
+					}
+				}
+			}
+		} else if arg == "--kv-cache-type-k" && i+1 < len(args) {
+			kType = args[i+1]
+		} else if arg == "--kv-cache-type-v" && i+1 < len(args) {
+			vType = args[i+1]
+		}
+	}
+	var result []string
+	if kType != "" {
+		result = append(result, kType)
+	}
+	if vType != "" && vType != kType {
+		result = append(result, vType)
+	}
+	return result
 }
 
 func addApiHandlers(pm *ProxyManager) {
@@ -79,13 +143,16 @@ func (pm *ProxyManager) getModelStatus() []Model {
 				state = "stopped"
 			}
 		}
+		cmd := pm.config.Models[modelID].Cmd
 		models = append(models, Model{
-			Id:          modelID,
-			Name:        pm.config.Models[modelID].Name,
-			Description: pm.config.Models[modelID].Description,
-			State:       state,
-			Unlisted:    pm.config.Models[modelID].Unlisted,
-			Aliases:     pm.config.Models[modelID].Aliases,
+			Id:           modelID,
+			Name:         pm.config.Models[modelID].Name,
+			Description:  pm.config.Models[modelID].Description,
+			State:        state,
+			Unlisted:     pm.config.Models[modelID].Unlisted,
+			Aliases:      pm.config.Models[modelID].Aliases,
+			ContextSize:  parseCtxSize(cmd),
+			KvCacheTypes: parseKvCacheTypes(cmd),
 		})
 	}
 
