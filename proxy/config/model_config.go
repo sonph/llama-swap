@@ -54,6 +54,9 @@ type ModelConfig struct {
 
 	// Timeout settings for proxy connections
 	Timeouts TimeoutsConfig `yaml:"timeouts"`
+
+	// Fallback: ordered list of model IDs to try when this model fails (502/503)
+	Fallback []string `yaml:"fallback"`
 }
 
 func (m *ModelConfig) UnmarshalYAML(unmarshal func(interface{}) error) error {

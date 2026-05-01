@@ -130,8 +130,13 @@ apiKeys:
 # - the model's ID is available in the ${MODEL_ID} macro, also available in macros defined above
 # - below are examples of the all the settings a model can have
 models:
-  # keys are the model names used in API requests
+  # Primary model with fallback to smaller model on failure
   "gpt-oss-120b":
+    # fallback: ordered list of model IDs to try when this model fails (502/503)
+    # - on failure, requests automatically retry with qwen-unlisted
+    # - each candidate applies its own filters independently
+    fallback:
+      - qwen-unlisted
     # macros: a dictionary of string substitutions specific to this model
     # - optional, default: empty dictionary
     # - macros defined here override macros defined in the global macros section
@@ -330,6 +335,35 @@ models:
     # - on Windows, calls taskkill to stop the process
     # - processes have 5 seconds to shutdown until forceful termination is attempted
     cmdStop: docker stop ${MODEL_ID}
+
+    # fallback: ordered list of model IDs to try when this model fails (502/503)
+    # - optional, default: [] (no fallback)
+    # - fallback only triggers on 502 (BadGateway) and 503 (ServiceUnavailable)
+    # - client errors (4xx) are returned immediately without fallback
+    # - each fallback candidate has its own model filters applied independently
+    # - multipart form endpoints (audio transcription, image edits) do NOT support fallback
+    # - NOTE: start latency multiplies — N fallbacks x M-second startup = N*M worst case
+    # fallback:
+    #   - backup-model
+    #   - last-resort-model
+
+# =============================================================================
+# fallbacks: top-level fallback chains keyed by model name
+# =============================================================================
+#
+# Top-level fallbacks are useful for peer-only deployments where there are no
+# local model configs. They work for any model name including peer models.
+#
+# - model-level `fallback:` takes precedence when both are set
+# - example: define fallback for a peer model with no local config
+#
+# Example: if OpenRouter is down, fall back to local models
+fallbacks:
+  meta-llama/llama-3.1-8b-instruct:
+    - gpt-oss-120b
+  deepseek/deepseek-v3.2:
+    - gpt-oss-120b
+    - qwen-unlisted
 
 # =============================================================================
 # matrix: run concurrent models with a solver-based swap DSL

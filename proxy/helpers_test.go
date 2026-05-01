@@ -217,6 +217,14 @@ func newTestHandler(respond string) http.Handler {
 		})
 	})
 
+	mux.HandleFunc("/v1/embeddings", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"responseMessage": respond,
+			"data":            []map[string]any{{"embedding": []float64{0.1, 0.2, 0.3}}},
+		})
+	})
+
 	mux.HandleFunc("/v1/audio/transcriptions", func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			w.WriteHeader(http.StatusBadRequest)

@@ -158,6 +158,9 @@ type Config struct {
 
 	// support remote peers, see issue #433, #296
 	Peers PeerDictionaryConfig `yaml:"peers"`
+
+	// top-level fallback chains keyed by model name (works for peer-only setups)
+	Fallbacks map[string][]string `yaml:"fallbacks"`
 }
 
 func (c *Config) RealModelName(search string) (string, bool) {
@@ -176,6 +179,19 @@ func (c *Config) FindConfig(modelName string) (ModelConfig, string, bool) {
 	} else {
 		return c.Models[realName], realName, true
 	}
+}
+
+// GetFallbackChain returns the ordered list of fallback model IDs for a given model ID.
+// Model-level Fallback takes precedence over top-level Fallbacks.
+// Returns nil if no fallback is configured for the model.
+func (c *Config) GetFallbackChain(modelID string) []string {
+	if mc, found := c.Models[modelID]; found && len(mc.Fallback) > 0 {
+		return mc.Fallback
+	}
+	if chain, found := c.Fallbacks[modelID]; found {
+		return chain
+	}
+	return nil
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -211,6 +227,7 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		MetricsMaxInMemory: 1000,
 		CaptureBuffer:      5,
 		GlobalTTL:          0,
+		Fallbacks:          make(map[string][]string),
 	}
 	if err = yaml.Unmarshal([]byte(yamlStr), &config); err != nil {
 		return Config{}, err
@@ -442,6 +459,15 @@ func LoadConfigFromReader(r io.Reader) (Config, error) {
 		}
 
 		config.Models[modelId] = modelConfig
+	}
+
+	// Merge per-model Fallback into top-level Fallbacks map
+	// Top-level Fallbacks already populated from YAML; only copy when not already set.
+	// Model-level Fallback takes precedence because GetFallbackChain checks Models[modelID].Fallback first.
+	for modelID, modelConfig := range config.Models {
+		if len(modelConfig.Fallback) > 0 && config.Fallbacks[modelID] == nil {
+			config.Fallbacks[modelID] = modelConfig.Fallback
+		}
 	}
 
 	// groups XOR matrix

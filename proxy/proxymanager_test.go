@@ -1543,7 +1543,7 @@ models:
 
 		proxy.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
-		assert.Contains(t, w.Body.String(), "could not find suitable inference handler")
+		assert.Contains(t, w.Body.String(), "could not find model unknown-model")
 	})
 
 	t.Run("peer API key is injected into request", func(t *testing.T) {
@@ -1604,7 +1604,7 @@ models:
 
 		proxy.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusBadRequest, w.Code)
-		assert.Contains(t, w.Body.String(), "could not find suitable inference handler")
+		assert.Contains(t, w.Body.String(), "could not find model unknown-model")
 	})
 
 	t.Run("peer streaming response sets X-Accel-Buffering header", func(t *testing.T) {

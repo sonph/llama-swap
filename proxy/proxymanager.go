@@ -19,7 +19,6 @@ import (
 	"github.com/mostlygeek/llama-swap/event"
 	"github.com/mostlygeek/llama-swap/proxy/config"
 	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 const (
@@ -750,135 +749,11 @@ func (pm *ProxyManager) mkProxyJSONHandler(cf captureFields) func(*gin.Context) 
 			return
 		}
 
-		// Look for a matching local model first
-		var nextHandler func(modelID string, w http.ResponseWriter, r *http.Request) error
+		// Preserve original body bytes for fallback candidates — each candidate's
+		// filters are applied independently to the unmodified request.
+		originalBodyBytes := bytes.Clone(bodyBytes)
 
-		modelID, found := pm.config.RealModelName(requestedModel)
-		if found {
-			var localHandler func(string, http.ResponseWriter, *http.Request) error
-			if pm.matrix != nil {
-				localHandler = pm.matrix.ProxyRequest
-			} else {
-				processGroup, err := pm.swapProcessGroup(modelID)
-				if err != nil {
-					pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error swapping process group: %s", err.Error()))
-					return
-				}
-				localHandler = processGroup.ProxyRequest
-			}
-
-			// issue #69 allow custom model names to be sent to upstream
-			useModelName := pm.config.Models[modelID].UseModelName
-			if useModelName != "" {
-				bodyBytes, err = sjson.SetBytes(bodyBytes, "model", useModelName)
-				if err != nil {
-					pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error rewriting model name in JSON: %s", err.Error()))
-					return
-				}
-			}
-
-			// issue #174 strip parameters from the JSON body
-			stripParams, err := pm.config.Models[modelID].Filters.SanitizedStripParams()
-			if err != nil { // just log it and continue
-				pm.proxyLogger.Errorf("Error sanitizing strip params string: %s, %s", pm.config.Models[modelID].Filters.StripParams, err.Error())
-			} else {
-				for _, param := range stripParams {
-					pm.proxyLogger.Debugf("<%s> stripping param: %s", modelID, param)
-					bodyBytes, err = sjson.DeleteBytes(bodyBytes, param)
-					if err != nil {
-						pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error deleting parameter %s from request", param))
-						return
-					}
-				}
-			}
-
-			// issue #453 set/override parameters in the JSON body
-			setParams, setParamKeys := pm.config.Models[modelID].Filters.SanitizedSetParams()
-			for _, key := range setParamKeys {
-				pm.proxyLogger.Debugf("<%s> setting param: %s", modelID, key)
-				bodyBytes, err = sjson.SetBytes(bodyBytes, key, setParams[key])
-				if err != nil {
-					pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting parameter %s in request", key))
-					return
-				}
-			}
-
-			// setParamsByID: set params based on the requested model ID (runs after setParams, can override it)
-			setParamsByIDParams, setParamsByIDKeys := pm.config.Models[modelID].Filters.SanitizedSetParamsByID(requestedModel)
-			for _, key := range setParamsByIDKeys {
-				pm.proxyLogger.Debugf("<%s> setting param by id: %s", requestedModel, key)
-				bodyBytes, err = sjson.SetBytes(bodyBytes, key, setParamsByIDParams[key])
-				if err != nil {
-					pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting parameter %s in request", key))
-					return
-				}
-			}
-
-			pm.proxyLogger.Debugf("ProxyManager using local Process for model: %s", requestedModel)
-			nextHandler = localHandler
-		} else if pm.peerProxy != nil && pm.peerProxy.HasPeerModel(requestedModel) {
-			pm.proxyLogger.Debugf("ProxyManager using ProxyPeer for model: %s", requestedModel)
-			modelID = requestedModel
-
-			// issue #453 apply filters for peer requests
-			peerFilters := pm.peerProxy.GetPeerFilters(requestedModel)
-
-			// Apply stripParams - remove specified parameters from request
-			stripParams := peerFilters.SanitizedStripParams()
-			for _, param := range stripParams {
-				pm.proxyLogger.Debugf("<%s> stripping param: %s", requestedModel, param)
-				bodyBytes, err = sjson.DeleteBytes(bodyBytes, param)
-				if err != nil {
-					pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error stripping parameter %s from request", param))
-					return
-				}
-			}
-
-			// Apply setParams - set/override specified parameters in request
-			setParams, setParamKeys := peerFilters.SanitizedSetParams()
-			for _, key := range setParamKeys {
-				pm.proxyLogger.Debugf("<%s> setting param: %s", requestedModel, key)
-				bodyBytes, err = sjson.SetBytes(bodyBytes, key, setParams[key])
-				if err != nil {
-					pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error setting parameter %s in request", key))
-					return
-				}
-			}
-
-			nextHandler = pm.peerProxy.ProxyRequest
-		}
-
-		if nextHandler == nil {
-			pm.sendErrorResponse(c, http.StatusBadRequest, fmt.Sprintf("could not find suitable inference handler for %s", requestedModel))
-			return
-		}
-
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		// dechunk it as we already have all the body bytes see issue #11
-		c.Request.Header.Del("transfer-encoding")
-		c.Request.Header.Set("content-length", strconv.Itoa(len(bodyBytes)))
-		c.Request.ContentLength = int64(len(bodyBytes))
-
-		// issue #366 extract values that downstream handlers may need
-		isStreaming := gjson.GetBytes(bodyBytes, "stream").Bool()
-		ctx := context.WithValue(c.Request.Context(), proxyCtxKey("streaming"), isStreaming)
-		ctx = context.WithValue(ctx, proxyCtxKey("model"), modelID)
-		c.Request = c.Request.WithContext(ctx)
-
-		if pm.metricsMonitor != nil && c.Request.Method == "POST" {
-			if err := pm.metricsMonitor.wrapHandler(modelID, c.Writer, c.Request, cf, nextHandler); err != nil {
-				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error proxying metrics wrapped request: %s", err.Error()))
-				pm.proxyLogger.Errorf("Error Proxying Metrics Wrapped Request model %s", modelID)
-				return
-			}
-		} else {
-			if err := nextHandler(modelID, c.Writer, c.Request); err != nil {
-				pm.sendErrorResponse(c, http.StatusInternalServerError, fmt.Sprintf("error proxying request: %s", err.Error()))
-				pm.proxyLogger.Errorf("Error Proxying Request for model %s", modelID)
-				return
-			}
-		}
+		pm.proxyWithFallback(c, requestedModel, originalBodyBytes, cf)
 	}
 }
 

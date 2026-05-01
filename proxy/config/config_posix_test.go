@@ -256,6 +256,7 @@ groups:
 				Members:    []string{"model4"},
 			},
 		},
+		Fallbacks: make(map[string][]string),
 	}
 
 	assert.Equal(t, expected, config)
