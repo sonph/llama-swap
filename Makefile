@@ -43,9 +43,15 @@ ui: ui/node_modules
 	cd ui-svelte && npm run build
 
 # Build OSX binary
-mac: ui
-	@echo "Building Mac binary..."
+mac: mac-arm64 mac-amd64
+
+mac-arm64: ui
+	@echo "Building Mac ARM64 binary..."
 	GOOS=darwin GOARCH=arm64 go build -ldflags="-X main.commit=${GIT_HASH} -X main.version=local_${GIT_HASH} -X main.date=${BUILD_DATE}" -o $(BUILD_DIR)/$(APP_NAME)-darwin-arm64
+
+mac-amd64: ui
+	@echo "Building Mac AMD64 binary..."
+	GOOS=darwin GOARCH=amd64 go build -ldflags="-X main.commit=${GIT_HASH} -X main.version=local_${GIT_HASH} -X main.date=${BUILD_DATE}" -o $(BUILD_DIR)/$(APP_NAME)-darwin-amd64
 
 # Build Linux binary
 linux: linux-arm64 linux-amd64
@@ -101,5 +107,5 @@ test-ui:
 	cd ui-svelte && npm ci && npm run check && npm test
 
 # Phony targets
-.PHONY: all clean ui mac windows simple-responder simple-responder-windows test test-all test-dev test-ui wol-proxy
-.PHONE: linux linux-arm64 linux-amd64
+.PHONY: all clean ui mac mac-arm64 mac-amd64 windows simple-responder simple-responder-windows test test-all test-dev test-ui wol-proxy
+.PHONY: linux linux-arm64 linux-amd64
