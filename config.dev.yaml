@@ -1,0 +1,59 @@
+macros:
+  "models_dir": "${env.LOCAL_MODELS}"
+  "kv44":
+    --cache-type-k q4_0
+    --cache-type-v q4_0
+  "primary":
+    --device cuda0
+  "secondary":
+    --device cuda1
+  "server_latest":
+    /home/sonph/code/llama.cpp/build/bin/llama-server
+    --jinja
+    --host 0.0.0.0 --port ${PORT}
+    --n-gpu-layers 999
+    --flash-attn on
+    --metrics
+  "server_latest_kv44":
+    ${server_latest}
+    ${kv44}
+
+hooks:
+  on_startup:
+    preload:
+      - "gemma4-e2b"
+
+peers:
+  openrouter:
+    proxy: https://openrouter.ai/api
+    apiKey: ${env.OPENROUTER_API_KEY}
+    models:
+      - openai/gpt-4o
+      - anthropic/claude-sonnet-4-5
+      - qwen/qwen3.6-plus:free
+      - mistralai/mistral-small-2603
+      - z-ai/glm-5-turbo
+      - nvidia/nemotron-3-super-120b-a12b:free
+      - openai/gpt-oss-120b:free
+  google:
+    proxy: https://generativelanguage.googleapis.com/v1beta/openai
+    apiKey: ${env.GEMINI_API_KEY}
+    models:
+      - gemini-flash-latest
+      - gemini-flash-lite-latest
+      - gemini-pro-latest
+
+models:
+  "gemma4-e2b":
+    description: "Gemma 4 E2B IQ4_NL"
+    aliases:
+      - "fast"
+    cmd: |
+      ${server_latest_kv44}
+      --model ${models_dir}/gemma-4-E2B-it-IQ4_NL.gguf
+      --temp 1.0
+      --top-p 0.95
+      --top-k 64
+      --ctx-size 10000
+      ${secondary}
+
