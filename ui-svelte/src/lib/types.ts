@@ -67,6 +67,18 @@ export interface HistogramData {
   p50: number;
 }
 
+export interface ScatterData {
+  points: Array<{
+    x: number;
+    y: number;
+    model: string;
+  }>;
+  xMin: number;
+  xMax: number;
+  yMin: number;
+  yMax: number;
+}
+
 export interface VersionInfo {
   build_date: string;
   commit: string;

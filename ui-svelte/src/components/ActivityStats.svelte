@@ -3,6 +3,7 @@
   import { persistentStore } from "../stores/persistent";
   import { calculateHistogramData } from "../lib/histogram";
   import TokenHistogram from "./TokenHistogram.svelte";
+  import ScatterPanel from "./ScatterPanel.svelte";
 
   const nf = new Intl.NumberFormat();
   const histogramCollapsed = persistentStore<boolean>("activity-histogram-collapsed", false);
@@ -75,6 +76,7 @@
       </div>
     </div>
   {/if}
+  <ScatterPanel />
   <div class="grid grid-cols-4 gap-x-6 gap-y-1 text-sm">
     <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Requests</div>
     <div class="text-xs uppercase tracking-wider text-gray-500 dark:text-gray-400">Cached</div>
